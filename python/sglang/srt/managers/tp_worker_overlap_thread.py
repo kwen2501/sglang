@@ -28,16 +28,18 @@ from sglang.srt.managers.io_struct import (
     InitWeightsUpdateGroupReqInput,
     UpdateWeightFromDiskReqInput,
     UpdateWeightsFromDistributedReqInput,
+    UpdateWeightsFromTensorReqInput,
 )
 from sglang.srt.managers.schedule_batch import ModelWorkerBatch
 from sglang.srt.managers.tp_worker import TpModelWorker
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.utils import get_compiler_backend
 from sglang.utils import get_exception_traceback
 
 logger = logging.getLogger(__name__)
 
 
-@torch.compile(dynamic=True)
+@torch.compile(dynamic=True, backend=get_compiler_backend())
 def resolve_future_token_ids(input_ids, future_token_ids_map):
     input_ids[:] = torch.where(
         input_ids < 0,
@@ -73,12 +75,15 @@ class TpModelWorkerClient:
         # Launch threads
         self.input_queue = Queue()
         self.output_queue = Queue()
-        self.forward_stream = torch.cuda.Stream()
+        self.forward_stream = torch.get_device_module(self.device).Stream()
         self.forward_thread = threading.Thread(
             target=self.forward_thread_func,
         )
         self.forward_thread.start()
         self.parent_process = psutil.Process().parent()
+        self.scheduler_stream = torch.get_device_module(self.device).current_stream()
+        if self.device == "cpu":
+            self.scheduler_stream.synchronize = lambda: None  # No-op for CPU
 
     def get_worker_info(self):
         return self.worker.get_worker_info()
@@ -89,6 +94,9 @@ class TpModelWorkerClient:
     def get_tp_cpu_group(self):
         return self.worker.get_tp_cpu_group()
 
+    def get_attention_tp_cpu_group(self):
+        return self.worker.get_attention_tp_cpu_group()
+
     def get_memory_pool(self):
         return (
             self.worker.model_runner.req_to_token_pool,
@@ -97,7 +105,7 @@ class TpModelWorkerClient:
 
     def forward_thread_func(self):
         try:
-            with torch.cuda.stream(self.forward_stream):
+            with torch.get_device_module(self.device).stream(self.forward_stream):
                 self.forward_thread_func_()
         except Exception:
             traceback = get_exception_traceback()
@@ -122,7 +130,7 @@ class TpModelWorkerClient:
 
             # Create event
             self.launch_done = threading.Event()
-            copy_done = torch.cuda.Event()
+            copy_done = torch.get_device_module(self.device).Event()
 
             # Resolve future tokens in the input
             input_ids = model_worker_batch.input_ids
@@ -141,18 +149,12 @@ class TpModelWorkerClient:
 
             # Copy results to the CPU
             if model_worker_batch.return_logprob:
-                logits_output.next_token_logprobs = logits_output.next_token_logprobs[
-                    torch.arange(len(next_token_ids), device=self.device),
-                    next_token_ids,
-                ].to("cpu", non_blocking=True)
+                logits_output.next_token_logprobs = (
+                    logits_output.next_token_logprobs.to("cpu", non_blocking=True)
+                )
                 if logits_output.input_token_logprobs is not None:
                     logits_output.input_token_logprobs = (
                         logits_output.input_token_logprobs.to("cpu", non_blocking=True)
-                    )
-                    logits_output.normalized_prompt_logprobs = (
-                        logits_output.normalized_prompt_logprobs.to(
-                            "cpu", non_blocking=True
-                        )
                     )
             next_token_ids = next_token_ids.to("cpu", non_blocking=True)
             copy_done.record()
@@ -172,9 +174,6 @@ class TpModelWorkerClient:
                 logits_output.input_token_logprobs = (
                     logits_output.input_token_logprobs.tolist()
                 )
-                logits_output.normalized_prompt_logprobs = (
-                    logits_output.normalized_prompt_logprobs.tolist()
-                )
         next_token_ids = next_token_ids.tolist()
         return logits_output, next_token_ids
 
@@ -190,7 +189,7 @@ class TpModelWorkerClient:
         )
 
         # A cuda stream sync here to avoid the cuda illegal memory access error.
-        torch.cuda.current_stream().synchronize()
+        self.scheduler_stream.synchronize()
 
         # Push a new batch to the queue
         self.input_queue.put((model_worker_batch, self.future_token_ids_ct))
@@ -221,6 +220,10 @@ class TpModelWorkerClient:
         self, recv_req: UpdateWeightsFromDistributedReqInput
     ):
         success, message = self.worker.update_weights_from_distributed(recv_req)
+        return success, message
+
+    def update_weights_from_tensor(self, recv_req: UpdateWeightsFromTensorReqInput):
+        success, message = self.worker.update_weights_from_tensor(recv_req)
         return success, message
 
     def get_weights_by_name(self, recv_req: GetWeightsByNameReqInput):

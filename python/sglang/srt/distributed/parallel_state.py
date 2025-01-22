@@ -1,4 +1,4 @@
-# Adapted from https://github.com/vllm-project/vllm/blob/a6221a144af772fd1a68fe7e627935dc53e81738/vllm/distributed/parallel_state.py
+# Adapted from https://github.com/vllm-project/vllm/blob/v0.6.4.post1/vllm/distributed/parallel_state.py
 
 # Copyright 2023 The vLLM team.
 # Adapted from
@@ -41,6 +41,7 @@ from torch.distributed import Backend, ProcessGroup
 from sglang.srt.utils import (
     direct_register_custom_op,
     is_cuda_alike,
+    is_hip,
     supports_custom_op,
 )
 
@@ -952,6 +953,9 @@ _ENABLE_CUSTOM_ALL_REDUCE = True
 def set_custom_all_reduce(enable: bool):
     global _ENABLE_CUSTOM_ALL_REDUCE
     _ENABLE_CUSTOM_ALL_REDUCE = enable
+    if enable and is_hip():
+        logger.warning("HIP doesn't support custom_all_reduce, so disable it.")
+        _ENABLE_CUSTOM_ALL_REDUCE = False
 
 
 def init_distributed_environment(
