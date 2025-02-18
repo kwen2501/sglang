@@ -197,6 +197,11 @@ class ForwardBatch:
     # For Qwen2-VL
     mrope_positions: torch.Tensor = None
 
+    # Added for symm_mem
+    length: int = 0
+    hidden_size: int = 0
+    dtype: torch.dtype = None
+
     @classmethod
     def init_new(
         cls,
@@ -235,11 +240,15 @@ class ForwardBatch:
 
         if ret.global_num_tokens is not None:
             max_len = max(ret.global_num_tokens)
-            ret.gathered_buffer = torch.zeros(
-                (max_len * model_runner.tp_size, model_runner.model_config.hidden_size),
-                dtype=model_runner.dtype,
-                device=device,
-            )
+            ret.length = max_len * model_runner.tp_size
+            ret.hidden_size = model_runner.model_config.hidden_size
+            ret.dtype = model_runner.dtype
+            # print(f"Allocating gather tensor: len: {max_len * model_runner.tp_size}")
+            # ret.gathered_buffer = torch.zeros(
+            #     (max_len * model_runner.tp_size, model_runner.model_config.hidden_size),
+            #     dtype=model_runner.dtype,
+            #     device=device,
+            # )
 
         if ret.forward_mode.is_idle():
             ret.positions = torch.empty((0,), device=device)

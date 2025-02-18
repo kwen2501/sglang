@@ -165,6 +165,15 @@ TORCH_LIBRARY_EXPAND(sgl_kernels, m) {
       "sgl_per_token_group_quant_fp8(Tensor input, Tensor output_q, Tensor output_s, int group_size,"
       " float eps, float fp8_min, float fp8_max) -> ()");
   m.impl("sgl_per_token_group_quant_fp8", torch::kCUDA, &sgl_per_token_group_quant_fp8);
+
+//   m.def(
+//       "multimem_all_gather_out(Tensor input, str group_name, Tensor(a!) out) -> Tensor(a!)");
+//   m.impl("multimem_all_gather_out", torch::kCUDA, &multimem_all_gather_out);
+}
+
+TORCH_LIBRARY_FRAGMENT(symm_mem, m) {
+  m.def(
+      "multimem_all_gather_out(Tensor input, str group_name, Tensor(a!) out) -> Tensor(a!)");
 }
 
 REGISTER_EXTENSION(_kernels)

@@ -152,3 +152,8 @@ void build_tree_kernel(at::Tensor parent_list, at::Tensor selected_index, at::Te
 // sgl_per_token_group_quant_fp8
 void sgl_per_token_group_quant_fp8(at::Tensor input, at::Tensor output_q, at::Tensor output_s, int64_t group_size,
                                    double eps, double fp8_min, double fp8_max);
+
+// at::Tensor multimem_all_gather_out(
+//     at::Tensor& input,
+//     std::string group_name,
+//     at::Tensor out);

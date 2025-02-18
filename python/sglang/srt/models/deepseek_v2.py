@@ -645,21 +645,60 @@ class DeepseekV2AttentionMLA(nn.Module):
         return output
 
 
+import torch.distributed._symmetric_memory as symm_mem
+
+
+MAX_LEN = 8192
+HIDDEN_SIZE = 5120
+global_gather_buffer = None
+
+
+def multimem_all_gather(msg_out, msg_in, group):
+    torch.ops.symm_mem.multimem_all_gather_out(
+        msg_in,
+        group.group_name,
+        msg_out,
+    )
+
+
 def all_gather(
     input_tensor: torch.Tensor, forward_batch: ForwardBatch, rank, world_size, group
 ):
     if world_size == 1:
         return input_tensor
 
+    global global_gather_buffer
+    if global_gather_buffer is None:
+        print(f"Allocating global gather tensor: len: {MAX_LEN * world_size}")
+        global_gather_buffer = symm_mem.empty(
+            MAX_LEN * world_size,
+            #forward_batch.hidden_size,
+            HIDDEN_SIZE,
+            dtype=input_tensor.dtype,
+            device=input_tensor.device,
+        )
+        symm_mem.rendezvous(global_gather_buffer, group.group_name)
+
     all_lens = forward_batch.global_num_tokens
     max_len = max(forward_batch.global_num_tokens)
+
+    forward_batch.gathered_buffer = torch.narrow(
+        global_gather_buffer,
+        0, 0, max_len * world_size,
+    )
 
     padded_tensor = torch.nn.functional.pad(
         input_tensor, (0, 0, 0, max_len - input_tensor.shape[0])
     )
 
-    torch.distributed.all_gather_into_tensor(
-        forward_batch.gathered_buffer, padded_tensor, group=group
+    # torch.distributed.all_gather_into_tensor(
+    #     forward_batch.gathered_buffer, padded_tensor, group=group
+    # )
+
+    multimem_all_gather(
+        forward_batch.gathered_buffer,
+        padded_tensor,
+        group,
     )
 
     gathered_tensors = torch.concat(
